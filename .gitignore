@@ -1,0 +1,37 @@
+# 个人账号会话凭证（极其重要：包含微信/雨课堂持久化登录态与 Cookie，严禁提交！）
+edge_profile/
+chrome_profile/
+
+# 个人私密配置文件（包含 API Key）
+config.json
+
+# 历史调试与开发归档目录
+archive/
+
+# 过程截图与题目临时图像
+*.png
+*.jpg
+*.jpeg
+current_problem.png
+current_check_screen.png
+current_lesson_fullscreen.png
+current_question.json
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# 操作系统与编辑器临时文件
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

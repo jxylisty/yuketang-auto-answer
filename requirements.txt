@@ -1,0 +1,13 @@
+# 雨课堂全自动随堂答题助手 Python 依赖包
+# 安装命令: pip install -r requirements.txt
+
+# 网页自动化与浏览器驱动
+selenium>=4.15.0
+
+# 接口请求与模型通信
+requests>=2.28.0
+
+# 本地 OCR 文字识别引擎 (国内高校网络可换清华源加速: -i https://pypi.tuna.tsinghua.edu.cn/simple)
+# 注意：若无独立显卡，安装 paddlepaddle CPU 版即可:
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0

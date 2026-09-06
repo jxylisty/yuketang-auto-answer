@@ -1,0 +1,12 @@
+{
+  "_comment": "雨课堂自动答题配置文件模板。请复制本文件为 config.json 并填写你的 API Key",
+  "api_base": "https://tokenrhythm.studio/v1",
+  "api_key": "YOUR_API_KEY_HERE",
+  "models": [
+    "deepseek-v4-flash-0731",
+    "glm-5.3-flash",
+    "qwen3.7-flash"
+  ],
+  "auto_submit": true,
+  "listen_interval": 1.0
+}
