@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         雨课堂随堂习题全自动值守助手 (自动进课堂+AI秒答+微信通知)
-// @namespace    https://github.com/yuketang-auto-answer
+// @namespace    https://github.com/jxylisty/yuketang-auto-answer
 // @version      1.1.0
 // @description  雨课堂/长江雨课堂 宿舍电脑后台全自动挂机：自动检测开课并进入、WebSocket毫秒捕获题目、AI秒解秒交、手机微信推送答题通知。
-// @author       Antigravity
+// @author       jxylisty
 // @match        https://*.yuketang.cn/*
 // @match        https://*.ykt.io/*
 // @grant        GM_setValue

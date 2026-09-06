@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-雨课堂独立全自动作答引擎 (本地 PaddleOCR + DeepSeek API 纯独立版)
-特点：
-1. 彻底脱离 Antigravity 客户端，Antigravity 可完全关闭！
-2. 彻底脱离梯子/代理，国内网络直连秒级响应！
-3. 纯本地自闭环：DOM/PaddleOCR 提取题目 -> TokenRhythm DeepSeek 秒出答案 -> 自动提交！
+雨课堂随堂测验自动作答引擎
+功能特点：
+1. 本地 DOM 结构嗅探与 PaddleOCR 文字识别双重提取
+2. 大模型极速求解与多模型自动容灾切换
+3. 支持单选、多选、多项填空与主观简答题全题型自动化
 """
 
 import sys
@@ -221,11 +221,11 @@ def get_driver(headless=False):
 
 def run_standalone_agent():
     """纯独立运行的主控制循环"""
-    print("=" * 65)
-    print("🚀 雨课堂【独立全自动值守引擎】启动 (PaddleOCR + DeepSeek 直连版)")
-    print(f"⚙️ 运行模式: 纯本地自动化 | 免梯子 | 免 Antigravity | 国内网络秒通")
-    print(f"📡 API 节点: {API_BASE} | 模型: {DEFAULT_MODEL}")
-    print("=" * 65)
+    print("=" * 60)
+    print("🚀 雨课堂随堂测验自动作答引擎已启动")
+    print(f"🌐 目标平台: {YKT_BASE_URL}")
+    print(f"🤖 默认模型: {DEFAULT_MODEL}")
+    print("=" * 60)
 
     # 预加载 OCR
     get_ocr_engine()
