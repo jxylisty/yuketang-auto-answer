@@ -106,23 +106,46 @@ def extract_text_from_image(image_path):
 def split_blank_answers(ans, expected_count=0):
     """智能解析多项填空题答案为列表"""
     ans = ans.strip()
+
+    # 1. 核心保障：如果页面只检测到 1 个填空框，绝对不要拆分，直接返回完整段落！
+    if expected_count == 1:
+        return [ans]
+
+    # 2. 优先检查竖线 | （提示词中强制约束的多项填空专用分隔符）
     if '|' in ans:
         parts = [p.strip() for p in ans.split('|') if p.strip()]
-        if len(parts) > 1: return parts
-    if '\n' in ans:
-        lines = [re.sub(r'^(?:\[?填空\d+\]?|\d+[\.、:：]|空\d+[:：])\s*', '', l.strip()).strip() for l in ans.split('\n') if l.strip()]
-        if len(lines) > 1: return lines
+        if len(parts) > 1:
+            return parts
+
+    # 3. 检查带编号的标签（如：[填空1]: 2  [填空2]: 3 或 空1: 2 空2: 3）
     labeled = re.findall(r'(?:\[?填空\d+\]?|\b\d+[\.、]|空\d+)[:：\s]*([^\s,，|]+)', ans)
     if labeled and len(labeled) > 1:
-        return labeled
-    if any(c in ans for c in [',', '，', '、']):
-        parts = [p.strip() for p in re.split(r'[,，、]', ans) if p.strip()]
-        if len(parts) > 1: return parts
-    spaces = [s.strip() for s in ans.split() if s.strip()]
-    if expected_count > 1 and len(spaces) == expected_count:
-        return spaces
-    elif len(spaces) > 1 and all(len(s) <= 15 for s in spaces):
-        return spaces
+        if expected_count <= 1 or len(labeled) == expected_count:
+            return labeled
+
+    # 4. 如果页面明确有多于 1 个空（expected_count > 1）：
+    if expected_count > 1:
+        # 按换行尝试
+        if '\n' in ans:
+            lines = [re.sub(r'^(?:\[?填空\d+\]?|\d+[\.、:：]|空\d+[:：])\s*', '', l.strip()).strip() for l in ans.split('\n') if l.strip()]
+            if len(lines) == expected_count:
+                return lines
+        # 按逗号/顿号尝试（拆分出的项数必须精准吻合预期空数）
+        if any(c in ans for c in [',', '，', '、']):
+            parts = [p.strip() for p in re.split(r'[,，、]', ans) if p.strip()]
+            if len(parts) == expected_count:
+                return parts
+        # 按空格尝试（拆分出的项数必须精准吻合预期空数）
+        spaces = [s.strip() for s in ans.split() if s.strip()]
+        if len(spaces) == expected_count:
+            return spaces
+
+    # 5. 如果没有指定 expected_count 但按换行有多行简短内容
+    if '\n' in ans:
+        lines = [re.sub(r'^(?:\[?填空\d+\]?|\d+[\.、:：]|空\d+[:：])\s*', '', l.strip()).strip() for l in ans.split('\n') if l.strip()]
+        if len(lines) > 1 and all(len(l) < 30 for l in lines):
+            return lines
+
     return [ans]
 
 def call_deepseek_solver(question_text, q_type, options=None):
@@ -420,9 +443,13 @@ def run_standalone_agent():
                             .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0).length;
                     """) or 0
 
-                    # 解析多项填空（支持 2 | 3 | 5 | 10 分别注入空1、空2、空3、空4）
-                    ans_list = split_blank_answers(ans, expected_count=detected_blank_count)
-                    print(f"📝 页面检测到 {detected_blank_count} 个填空槽位，精准解析各空答案: {ans_list}")
+                    if "主观" in q_type:
+                        ans_list = [ans]
+                        print(f"📝 主观题整段填入答案: 【{ans[:60]}...】")
+                    else:
+                        # 解析多项填空（支持 2 | 3 | 5 | 10 分别注入空1、空2、空3、空4）
+                        ans_list = split_blank_answers(ans, expected_count=detected_blank_count)
+                        print(f"📝 页面检测到 {detected_blank_count} 个填空槽位，精准解析各空答案: {ans_list}")
 
                     # 依次填入各个输入框并彻底触发 Vue 数据绑定
                     driver.execute_script("""
