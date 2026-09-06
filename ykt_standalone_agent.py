@@ -47,7 +47,12 @@ def load_config():
         except Exception as e:
             print(f"⚠️ 读取 config.json 失败: {e}，使用默认配置")
     elif os.path.exists(example_path):
-        print("💡 未检测到 config.json，建议复制 config.example.json 并配置您的 API Key。")
+        try:
+            import shutil
+            shutil.copyfile(example_path, config_path)
+            print("💡 首次运行已自动为您生成 config.json 配置文件模板。")
+        except Exception:
+            pass
     return cfg
 
 CONFIG = load_config()
@@ -239,8 +244,17 @@ def get_driver(headless=False):
 
     if headless:
         opts.add_argument("--headless=new")
-    driver = webdriver.Edge(options=opts)
-    return driver
+    try:
+        driver = webdriver.Edge(options=opts)
+        return driver
+    except Exception as e:
+        print("\n❌ 启动 Microsoft Edge 浏览器失败！")
+        print(f"详细错误: {e}")
+        print("\n💡 排查建议:")
+        print("1. 确保电脑已安装 Edge 浏览器。")
+        print("2. 如有正在运行的 Edge 占用了数据目录，请在任务管理器关闭后重试。")
+        print("3. 检查网络通畅以便自动加载浏览器驱动。\n")
+        raise
 
 def run_standalone_agent():
     """纯独立运行的主控制循环"""
@@ -248,6 +262,11 @@ def run_standalone_agent():
     print("🚀 雨课堂随堂测验自动作答引擎已启动")
     print(f"🌐 目标平台: {YKT_BASE_URL}")
     print(f"🤖 默认模型: {DEFAULT_MODEL}")
+    if not API_KEY or API_KEY == "YOUR_API_KEY_HERE":
+        print("⚠️ [提示] 尚未配置有效 API Key，请在 config.json 中填入 Key。")
+    else:
+        masked = API_KEY[:6] + "..." + API_KEY[-4:] if len(API_KEY) > 10 else "***"
+        print(f"🔑 API Key: {masked} (配置有效)")
     print("=" * 60)
 
     # 预加载 OCR
@@ -381,7 +400,11 @@ def run_standalone_agent():
 
             if quiz_info and quiz_info.get("hasQuiz"):
                 prob_id = quiz_info.get("probId")
-                if prob_id and prob_id in answered_problem_ids:
+                if not prob_id:
+                    dom_fingerprint = (quiz_info.get("domText") or "").strip()[:50]
+                    prob_id = f"gen_{abs(hash(dom_fingerprint + quiz_info.get('qType', '')))}"
+
+                if prob_id in answered_problem_ids:
                     time.sleep(1)
                     continue
 
@@ -482,59 +505,63 @@ def run_standalone_agent():
                     time.sleep(1)
 
                 # 3. 点击提交按钮（区分抽屉提交与大屏选择题提交）
-                if "填空" in q_type or "主观" in q_type:
-                    # 填空/主观题专属：精确点击右侧抽屉底部的【提交答案】按钮
-                    sub_res = driver.execute_script("""
-                        // 优先在抽屉容器 / .btn-box 内寻找
-                        const btnBoxes = Array.from(document.querySelectorAll('.btn-box, [class*="drawer"], .submission-btn'));
-                        for (const box of btnBoxes) {
-                            const btn = Array.from(box.querySelectorAll('button, span, div, a')).find(el => 
-                                ['提交答案', '提交'].includes(el.textContent.trim()) && el.offsetWidth > 0
-                            );
-                            if (btn) {
-                                btn.click();
-                                if (btn.parentElement) btn.parentElement.click();
-                                return { success: true, target: 'drawer_box_btn' };
+                if AUTO_SUBMIT:
+                    if "填空" in q_type or "主观" in q_type:
+                        # 填空/主观题专属：精确点击右侧抽屉底部的【提交答案】按钮
+                        sub_res = driver.execute_script("""
+                            // 优先在抽屉容器 / .btn-box 内寻找
+                            const btnBoxes = Array.from(document.querySelectorAll('.btn-box, [class*="drawer"], .submission-btn'));
+                            for (const box of btnBoxes) {
+                                const btn = Array.from(box.querySelectorAll('button, span, div, a')).find(el => 
+                                    ['提交答案', '提交'].includes(el.textContent.trim()) && el.offsetWidth > 0
+                                );
+                                if (btn) {
+                                    btn.click();
+                                    if (btn.parentElement) btn.parentElement.click();
+                                    return { success: true, target: 'drawer_box_btn' };
+                                }
                             }
-                        }
-                        // 倒序查找（抽屉在 DOM 最底端）
-                        const all = Array.from(document.querySelectorAll('*')).reverse();
-                        const sub = all.find(el => 
-                            el.children.length === 0 && 
-                            ['提交答案', '提交'].includes(el.textContent.trim()) && 
-                            el.offsetWidth > 0
-                        );
-                        if (sub) {
-                            sub.click();
-                            if (sub.parentElement) sub.parentElement.click();
-                            return { success: true, target: 'reverse_sub_btn' };
-                        }
-                        return { success: false };
-                    """)
-                else:
-                    # 选择题专属：点击大屏画布上的提交按钮
-                    sub_res = driver.execute_script("""
-                        const allEls = Array.from(document.querySelectorAll('button, .submit-btn, div, span, a'));
-                        const sub = allEls.find(b => {
-                            const t = b.textContent.trim();
-                            const cls = b.className || '';
-                            return b.offsetWidth > 0 && (
-                                t === '提交答案' || 
-                                t === '提交' || 
-                                (typeof cls === 'string' && cls.includes('submit-btn'))
+                            // 倒序查找（抽屉在 DOM 最底端）
+                            const all = Array.from(document.querySelectorAll('*')).reverse();
+                            const sub = all.find(el => 
+                                el.children.length === 0 && 
+                                ['提交答案', '提交'].includes(el.textContent.trim()) && 
+                                el.offsetWidth > 0
                             );
-                        });
-                        if (sub) {
-                            sub.click();
-                            if (sub.parentElement) sub.parentElement.click();
-                            return { success: true, target: 'canvas_submit_btn' };
-                        }
-                        return { success: false };
-                    """)
-                print(f"提交按钮点击响应: {sub_res}")
+                            if (sub) {
+                                sub.click();
+                                if (sub.parentElement) sub.parentElement.click();
+                                return { success: true, target: 'reverse_sub_btn' };
+                            }
+                            return { success: false };
+                        """)
+                    else:
+                        # 选择题专属：点击大屏画布上的提交按钮
+                        sub_res = driver.execute_script("""
+                            const allEls = Array.from(document.querySelectorAll('button, .submit-btn, div, span, a'));
+                            const sub = allEls.find(b => {
+                                const t = b.textContent.trim();
+                                const cls = b.className || '';
+                                return b.offsetWidth > 0 && (
+                                    t === '提交答案' || 
+                                    t === '提交' || 
+                                    (typeof cls === 'string' && cls.includes('submit-btn'))
+                                );
+                            });
+                            if (sub) {
+                                sub.click();
+                                if (sub.parentElement) sub.parentElement.click();
+                                return { success: true, target: 'canvas_submit_btn' };
+                            }
+                            return { success: false };
+                        """)
+                    print(f"提交按钮点击响应: {sub_res}")
+                    print("✅ 提交指令已下发！状态已同步至教师端！")
+                else:
+                    print("💡 auto_submit 设为 false，答案已就绪，请手动确认点击提交。")
+
                 if prob_id:
                     answered_problem_ids.add(prob_id)
-                print("✅ 提交指令已下发！状态已同步至教师端！")
                 print("=" * 65)
 
             time.sleep(1)

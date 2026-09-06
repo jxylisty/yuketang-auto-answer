@@ -60,7 +60,17 @@ def main():
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    driver = webdriver.Edge(options=opts)
+    try:
+        driver = webdriver.Edge(options=opts)
+    except Exception as e:
+        print("\n❌ 启动 Microsoft Edge 浏览器失败！")
+        print(f"详细错误: {e}")
+        print("\n💡 排查建议:")
+        print("1. 请确保已安装 Microsoft Edge 浏览器。")
+        print("2. 如有其他 Edge 窗口占用了 edge_profile 目录，请在任务管理器中关闭后重试。")
+        print("3. 确保网络通常以便 Selenium 自动加载驱动。\n")
+        return
+
     try:
         login_url = f"{base_url}/v2/web/index"
         print(f"2. 正在打开雨课堂登录页: {login_url}")
