@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import requests
+import base64
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
@@ -58,7 +59,13 @@ def load_config():
 CONFIG = load_config()
 API_BASE = CONFIG.get("api_base", "https://tokenrhythm.studio/v1")
 API_KEY = CONFIG.get("api_key", "")
-MODELS_POOL = CONFIG.get("models", ["deepseek-v4-flash-0731", "glm-5.3-flash", "qwen3.7-flash"])
+MODELS_POOL = list(CONFIG.get("models", ["deepseek-v4-flash-0731", "glm-5.3-flash", "qwen3.7-flash"]))
+ENABLE_MULTIMODAL = CONFIG.get("enable_multimodal", False)
+MULTIMODAL_MODELS = CONFIG.get("multimodal_models", ["qwen-vl-plus", "glm-4v-flash"])
+if ENABLE_MULTIMODAL and MULTIMODAL_MODELS:
+    for vm in reversed(MULTIMODAL_MODELS):
+        if vm not in MODELS_POOL:
+            MODELS_POOL.insert(0, vm)
 DEFAULT_MODEL = MODELS_POOL[0] if MODELS_POOL else "deepseek-v4-flash-0731"
 AUTO_SUBMIT = CONFIG.get("auto_submit", True)
 LISTEN_INTERVAL = CONFIG.get("listen_interval", 1.0)
@@ -153,8 +160,8 @@ def split_blank_answers(ans, expected_count=0):
 
     return [ans]
 
-def call_deepseek_solver(question_text, q_type, options=None):
-    """调用 API 获取高准确率答案（支持多模型自动重试与故障转移）"""
+def call_deepseek_solver(question_text, q_type, options=None, image_path=None):
+    """调用 API 获取高准确率答案（支持纯文字与多模态 Vision 看图解题，以及多模型故障转移）"""
     if not API_KEY or API_KEY == "YOUR_API_KEY_HERE":
         print("❌ 未检测到有效的 API Key！请先在 config.json 中配置您的 API Key。")
         if "单选" in q_type: return "C"
@@ -167,7 +174,7 @@ def call_deepseek_solver(question_text, q_type, options=None):
     }
 
     opt_str = f"\n可选选项: {', '.join(options)}" if options else ""
-    prompt = f"""你是一个大学课堂随堂测验答题专家。请根据以下题目内容给出高准确率的回答：
+    prompt = f"""你是一个大学课堂随堂测验答题专家。请根据以下题目内容（若附带大屏图像请仔细分析其中的电路图、几何图形、流程图、函数曲线或排版细节）给出高准确率的回答：
 
 【题目类型】: {q_type}
 【题目内容】:
@@ -183,21 +190,53 @@ def call_deepseek_solver(question_text, q_type, options=None):
 4. 如果是【主观题/简答题】：请针对题目给出要点清晰、符合字数要求的精准答案，直接输出内容，不要废话。
 """
 
+    # 准备多模态 Base64 图片数据
+    img_b64 = None
+    if image_path and os.path.exists(image_path):
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            pass
+
     for model_name in MODELS_POOL:
+        # 判断当前模型是否作为多模态视觉模型调用
+        is_vision = (
+            ENABLE_MULTIMODAL or
+            any(k in model_name.lower() for k in ["vl", "vision", "4v", "4o", "gemini", "multimodal"])
+        )
+
+        if is_vision and img_b64:
+            user_content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{img_b64}"
+                    }
+                }
+            ]
+            mode_tag = "👁️ 视觉看图解题"
+            timeout_sec = 12
+        else:
+            user_content = prompt
+            mode_tag = "📝 纯文本求解"
+            timeout_sec = 9
+
         payload = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": "你是一个严谨的随堂测试答题助手。严格按格式输出最终答案。"},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": user_content}
             ],
             "temperature": 0.1,
             "max_tokens": 500
         }
         for attempt in range(1, 3):
             try:
-                print(f"🧠 [模型思考中...] 正在请求 {model_name} (尝试 {attempt}/2)...")
+                print(f"🧠 [模型思考中...] 正在请求 {model_name} [{mode_tag}] (尝试 {attempt}/2)...")
                 t0 = time.time()
-                r = requests.post(f"{API_BASE}/chat/completions", headers=headers, json=payload, timeout=9)
+                r = requests.post(f"{API_BASE}/chat/completions", headers=headers, json=payload, timeout=timeout_sec)
                 if r.status_code == 200:
                     res = r.json()
                     ans = res['choices'][0]['message']['content'].strip()
@@ -209,7 +248,7 @@ def call_deepseek_solver(question_text, q_type, options=None):
                 else:
                     print(f"⚠️ {model_name} (尝试 {attempt}) 响应异常 ({r.status_code}): {r.text[:80]}")
             except requests.exceptions.Timeout:
-                print(f"⏱️ {model_name} (尝试 {attempt}) 响应超时(9s)，正在重试或切换备用模型...")
+                print(f"⏱️ {model_name} (尝试 {attempt}) 响应超时({timeout_sec}s)，正在重试或切换备用模型...")
             except Exception as e:
                 print(f"⚠️ {model_name} (尝试 {attempt}) 异常: {e}")
             time.sleep(0.5)
@@ -262,6 +301,8 @@ def run_standalone_agent():
     print("🚀 雨课堂随堂测验自动作答引擎已启动")
     print(f"🌐 目标平台: {YKT_BASE_URL}")
     print(f"🤖 默认模型: {DEFAULT_MODEL}")
+    vision_desc = "已开启 (支持电路/几何/图表看图作答)" if ENABLE_MULTIMODAL else "未开启 (纯文字/OCR模式)"
+    print(f"👁️ 多模态视觉: {vision_desc}")
     if not API_KEY or API_KEY == "YOUR_API_KEY_HERE":
         print("⚠️ [提示] 尚未配置有效 API Key，请在 config.json 中填入 Key。")
     else:
@@ -423,8 +464,12 @@ def run_standalone_agent():
                         question_content = ocr_text
                         print(f"📖 OCR 提取题干成功: 【{question_content[:80]}...】")
 
-                # 调用 DeepSeek 获取答案
-                ans = call_deepseek_solver(question_content, q_type, options)
+                # 若未开启多模态，提示非文字题的局限
+                if not ENABLE_MULTIMODAL:
+                    print("💡 [题型提示] 当前为纯文字/OCR模式。若遇电路图/几何/图表等【非文字题】，纯 OCR 无法理解图像关系；建议在 config.json 开启多模态视觉模型 (如 qwen-vl / glm-4v) 以支持看图解题。")
+
+                # 调用大模型获取答案 (传入屏幕截图支持多模态直接看图答题)
+                ans = call_deepseek_solver(question_content, q_type, options, image_path=SCREENSHOT_FILE)
 
                 # 执行自动化提交
                 print(f"⚡ 正在向雨课堂提交最终答案: 【{ans}】...")

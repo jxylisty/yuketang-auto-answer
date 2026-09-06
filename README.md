@@ -53,6 +53,21 @@
 
 ---
 
+## 👁️ 多模态视觉 (Vision) vs 纯文字 OCR 模式说明
+
+> [!IMPORTANT]
+> **关于图表题、电路题、几何题等【非文字视觉题】的解决机制：**
+>
+> 1. **纯文字 + 本地 PaddleOCR 模式（默认模式）**：
+>    - **适用场景**：绝大多数以文字描述为主的概念单选题、多选题、填空题与简答题。
+>    - **客观局限**：如果老师发布的题目包含**电路分析图、几何作图、物理受力图、函数曲线、流程图或结构连线**等【非文字图表】，纯 OCR 只能识别出零碎的字母和数字（如 `R1`, `C`, `A`, `B`），大模型无法感知图形的空间关系与连线逻辑。
+>
+> 2. **多模态视觉 (Vision) 模式（进阶看图解题）**：
+>    - **核心优势**：系统会自动将大屏课件截图直接编码并上传给视觉大模型（如 `qwen-vl` / `glm-4v` / `gpt-4o` 等）。AI 拥有“人类般的视觉眼眸”，直接看图理解电路走向与几何关系，轻松秒解图表类难题！
+>    - **极速开启**：在 `config.json` 中设置 `"enable_multimodal": true` 并指定你的视觉模型即可开启。
+
+---
+
 ## 🏗️ 运行流程架构
 
 ```mermaid
@@ -109,6 +124,11 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
     "glm-5.3-flash",
     "qwen3.7-flash"
   ],
+  "enable_multimodal": false,
+  "multimodal_models": [
+    "qwen-vl-plus",
+    "glm-4v-flash"
+  ],
   "yuketang_base_url": "https://www.yuketang.cn",
   "auto_submit": true,
   "listen_interval": 1.0
@@ -126,7 +146,9 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 | `yuketang_base_url` | string | `https://www.yuketang.cn` | 雨课堂主站域名（各校专有二级域名在此调整） |
 | `api_base` | string | `https://tokenrhythm.studio/v1` | 兼容 OpenAI 格式的 API 请求基址 |
 | `api_key` | string | `""` | 你的大模型接口 API Key（必填） |
-| `models` | array | `["deepseek-v4-flash-0731", ...]` | 模型灾备池，按从前到后优先级依次尝试 |
+| `models` | array | `["deepseek-v4-flash-0731", ...]` | 纯文本模型灾备池，按从前到后优先级依次尝试 |
+| `enable_multimodal` | bool | `false` | 是否开启多模态视觉看图解题（解决电路/几何等非文字题） |
+| `multimodal_models` | array | `["qwen-vl-plus", "glm-4v-flash"]` | 多模态视觉模型队列，开启后自动将题目截图发送给视觉模型 |
 | `auto_submit` | bool | `true` | 是否在做完题后自动点击最终提交按钮 |
 | `listen_interval` | float | `1.0` | 课堂状态轮询监听间隔（秒） |
 
