@@ -13,6 +13,24 @@
 
 ---
 
+## 📌 适用平台与版本明确说明 (Platform & Scope)
+
+> [!IMPORTANT]
+> **请务必在运行前确认您所在学校的雨课堂网页端版本与访问域名：**
+>
+> 1. **核心原生适配平台**：
+>    - **雨课堂官方标准通用版**：`https://www.yuketang.cn`
+>    - **网页学生端登录入口**：`https://www.yuketang.cn/v2/web/index`
+>    - **作答大屏核心交互页**：`https://www.yuketang.cn/lesson/fullscreen/v3/{lesson_id}`
+>    - 全国绝大多数普通高校、采用**微信扫码登录**的标准雨课堂 V2/V3 网页体系均能完美无感开箱即用。
+>
+> 2. **关于高校定制/专有云版本（如长江雨课堂、荷塘雨课堂等）**：
+>    - 部分高校（如清华、武大、华科等）部署了高校专属二级域名（如 `changjiang.yuketang.cn`、`pro.yuketang.cn` 或各校独立子域）。
+>    - 本项目现已支持在 `config.json` 中自定义配置 `"yuketang_base_url": "https://你的高校雨课堂域名"`。
+>    - **注意**：部分专有云版本采用了强绑定的**统一身份认证单点登录 (SSO / 学工号密码)** 或不同的内部组件路由，若在扫码或大屏监听时遇到差异，欢迎提交 [Issues](https://github.com/jxylisty/yuketang-auto-answer/issues) 共同适配！
+
+---
+
 ## ✨ 核心特性
 
 - 🎯 **全题型深度覆盖**：
@@ -91,6 +109,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
     "glm-5.3-flash",
     "qwen3.7-flash"
   ],
+  "yuketang_base_url": "https://www.yuketang.cn",
   "auto_submit": true,
   "listen_interval": 1.0
 }
@@ -104,6 +123,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 | 配置项 | 类型 | 默认值 | 作用说明 |
 | :--- | :---: | :--- | :--- |
+| `yuketang_base_url` | string | `https://www.yuketang.cn` | 雨课堂主站域名（各校专有二级域名在此调整） |
 | `api_base` | string | `https://tokenrhythm.studio/v1` | 兼容 OpenAI 格式的 API 请求基址 |
 | `api_key` | string | `""` | 你的大模型接口 API Key（必填） |
 | `models` | array | `["deepseek-v4-flash-0731", ...]` | 模型灾备池，按从前到后优先级依次尝试 |

@@ -15,12 +15,23 @@ if sys.platform.startswith('win'):
 
 import os
 import time
+import json
 import subprocess
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(BASE_DIR, "edge_profile")
+
+def get_base_url():
+    cfg_file = os.path.join(BASE_DIR, "config.json")
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                return json.load(f).get("yuketang_base_url", "https://www.yuketang.cn").rstrip("/")
+        except Exception:
+            pass
+    return "https://www.yuketang.cn"
 
 def ensure_edge_clean():
     """清理可能冲突的残留 Edge 进程"""
@@ -31,8 +42,9 @@ def ensure_edge_clean():
         pass
 
 def main():
+    base_url = get_base_url()
     print("=" * 60)
-    print("🔑 雨课堂【首次扫码登录助手】")
+    print(f"🔑 雨课堂【首次扫码登录助手】(目标平台: {base_url})")
     print("=" * 60)
     print("1. 正在唤起 Edge 专属配置窗口...")
     ensure_edge_clean()
@@ -50,8 +62,9 @@ def main():
 
     driver = webdriver.Edge(options=opts)
     try:
-        print("2. 正在打开雨课堂官网: https://www.yuketang.cn/v2/web/index")
-        driver.get("https://www.yuketang.cn/v2/web/index")
+        login_url = f"{base_url}/v2/web/index"
+        print(f"2. 正在打开雨课堂登录页: {login_url}")
+        driver.get(login_url)
         print("\n👉 请在弹出的浏览器中，使用【微信】扫码完成雨课堂登录！")
         print("💡 提示：扫码成功并进入主页后，系统会自动检测并完成保存。")
         print("   (若已扫码完毕，亦可直接在控制台按回车继续)")

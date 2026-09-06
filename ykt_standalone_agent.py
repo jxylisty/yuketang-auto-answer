@@ -57,6 +57,7 @@ MODELS_POOL = CONFIG.get("models", ["deepseek-v4-flash-0731", "glm-5.3-flash", "
 DEFAULT_MODEL = MODELS_POOL[0] if MODELS_POOL else "deepseek-v4-flash-0731"
 AUTO_SUBMIT = CONFIG.get("auto_submit", True)
 LISTEN_INTERVAL = CONFIG.get("listen_interval", 1.0)
+YKT_BASE_URL = CONFIG.get("yuketang_base_url", "https://www.yuketang.cn").rstrip("/")
 
 # 全局 PaddleOCR 实例（懒加载）
 _OCR_ENGINE = None
@@ -231,7 +232,7 @@ def run_standalone_agent():
 
     driver = get_driver(headless=False)
     try:
-        driver.get("https://www.yuketang.cn/v2/web/index")
+        driver.get(f"{YKT_BASE_URL}/v2/web/index")
         time.sleep(2)
 
         print("\n👀 正在监听课堂动态... (检测开课中)")
@@ -259,7 +260,7 @@ def run_standalone_agent():
                     l_id = on_lesson.get("lessonId") or on_lesson.get("lesson_id")
                     c_name = on_lesson.get("courseName") or "雨课堂"
                     print(f"🎯 检测到进行中课堂: 【{c_name}】(ID: {l_id})，正在直连大屏...")
-                    driver.get(f"https://www.yuketang.cn/lesson/fullscreen/v3/{l_id}")
+                    driver.get(f"{YKT_BASE_URL}/lesson/fullscreen/v3/{l_id}")
                     time.sleep(4)
                     continue
                 else:
