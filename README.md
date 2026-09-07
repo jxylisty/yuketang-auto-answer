@@ -131,6 +131,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
   ],
   "yuketang_base_url": "https://www.yuketang.cn",
   "auto_submit": true,
+  "headless": false,
   "listen_interval": 1.0
 }
 ```
@@ -150,7 +151,12 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 | `enable_multimodal` | bool | `false` | 是否开启多模态视觉看图解题（解决电路/几何等非文字题） |
 | `multimodal_models` | array | `["qwen-vl-plus", "glm-4v-flash"]` | 多模态视觉模型队列，开启后自动将题目截图发送给视觉模型 |
 | `auto_submit` | bool | `true` | 是否在做完题后自动点击最终提交按钮 |
+| `headless` | bool | `false` | 是否开启无头模式（静默后台运行，不弹出浏览器界面） |
 | `listen_interval` | float | `1.0` | 课堂状态轮询监听间隔（秒） |
+
+> **💡 上课挂机防踩坑须知**：
+> - **切勿合盖休眠**：Windows 笔记本在合上屏幕时会自动进入“休眠模式（Sleep）”，CPU 与 Wi-Fi 将被彻底掐断。**请务必在到达教室、开机连上校园网/热点后再启动程序**！
+> - **切勿手动关闭 Edge**：自动拉起的 Edge 浏览器是操作核心载体，**可以最小化至后台，但切勿点击右上角 X 关闭**。（程序已内置自动重连与自愈保护，即使误关也会自动重新拉起）。
 
 > **💡 免费/高性价比 API 推荐**：
 > - **TokenRhythm**：支持高并发极速 Flash 模型，注册赠送额度。

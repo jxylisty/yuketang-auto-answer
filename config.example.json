@@ -14,5 +14,6 @@
     "glm-4v-flash"
   ],
   "auto_submit": true,
+  "headless": false,
   "listen_interval": 1.0
 }

@@ -24,6 +24,7 @@ import base64
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(BASE_DIR, "edge_profile")
@@ -69,6 +70,7 @@ if ENABLE_MULTIMODAL and MULTIMODAL_MODELS:
 DEFAULT_MODEL = MODELS_POOL[0] if MODELS_POOL else "deepseek-v4-flash-0731"
 AUTO_SUBMIT = CONFIG.get("auto_submit", True)
 LISTEN_INTERVAL = CONFIG.get("listen_interval", 1.0)
+HEADLESS = CONFIG.get("headless", False)
 YKT_BASE_URL = CONFIG.get("yuketang_base_url", "https://www.yuketang.cn").rstrip("/")
 
 # 全局 PaddleOCR 实例（懒加载）
@@ -260,6 +262,27 @@ def call_deepseek_solver(question_text, q_type, options=None, image_path=None):
         return "ABCD"
     return "已收到并作答"
 
+def prevent_system_sleep():
+    """在 Windows 上阻止系统因长时间无操作而进入睡眠休眠，确保课堂值守不中断"""
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+            ES_CONTINUOUS = 0x80000000
+            ES_SYSTEM_REQUIRED = 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        except Exception:
+            pass
+
+def restore_system_sleep():
+    """恢复系统正常休眠策略"""
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+            ES_CONTINUOUS = 0x80000000
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+        except Exception:
+            pass
+
 def ensure_edge_clean():
     """清理可能冲突的残留 Edge 进程"""
     try:
@@ -313,305 +336,331 @@ def run_standalone_agent():
     # 预加载 OCR
     get_ocr_engine()
 
-    driver = get_driver(headless=False)
+    prevent_system_sleep()
+    driver = get_driver(headless=HEADLESS)
     try:
         driver.get(f"{YKT_BASE_URL}/v2/web/index")
         time.sleep(2)
 
         print("\n👀 正在监听课堂动态... (检测开课中)")
+        print("💡 [挂机须知] 浏览器窗口【可最小化】，但【切勿手动点击右上角 X 关闭】。")
+        print("💡 [考勤须知] 请在【到达教室、连上网络且电脑开机】后挂机，合上笔记本盖子休眠会导致断网中断。\n")
         answered_problem_ids = set()
 
         while True:
-            cur_url = driver.current_url
+            try:
+                cur_url = driver.current_url
 
-            # 1. 如果不在大屏课堂中，探测并直连正在上课的课堂
-            if "/lesson/" not in cur_url:
-                on_lesson = driver.execute_script("""
-                    return (async function() {
-                        try {
-                            const res = await fetch('/api/v3/classroom/on-lesson', { credentials: 'include' });
-                            if (res.ok) {
-                                const j = await res.json();
-                                const list = j.data?.onLessonClassrooms || [];
-                                if (list.length > 0) return list[0];
-                            }
-                        } catch(e) {}
-                        return null;
-                    })();
-                """)
-                if on_lesson:
-                    l_id = on_lesson.get("lessonId") or on_lesson.get("lesson_id")
-                    c_name = on_lesson.get("courseName") or "雨课堂"
-                    print(f"🎯 检测到进行中课堂: 【{c_name}】(ID: {l_id})，正在直连大屏...")
-                    driver.get(f"{YKT_BASE_URL}/lesson/fullscreen/v3/{l_id}")
-                    time.sleep(4)
-                    continue
-                else:
-                    time.sleep(3)
-                    continue
-
-            # 2. 已在大屏课堂中，以 1 秒频率监听发题状态
-            quiz_info = driver.execute_script("""
-                const info = { hasQuiz: false };
-                const app = document.querySelector('#app');
-                const store = app && app.__vue__ && app.__vue__.$store ? app.__vue__.$store.state : null;
-                const currSlide = store ? store.currSlide : null;
-
-                // 优先检查左侧栏是否有未完成题目
-                const unfin = Array.from(document.querySelectorAll('.timeline__item.J_slide, .timeline__item'))
-                    .find(el => el.innerText.includes('未完成'));
-                if (unfin && !unfin.className.includes('active')) {
-                    unfin.click();
-                }
-
-                // 探测作答元素
-                const bodyText = document.body.innerText || '';
-                const isCompleted = bodyText.includes('已完成') && !bodyText.includes('未完成');
-                const hasTiming = Array.from(document.querySelectorAll('*')).some(el => 
-                    (el.className && typeof el.className === 'string' && el.className.includes('timing')) ||
-                    el.textContent.includes('倒计时')
-                );
-                const hasSubmit = Array.from(document.querySelectorAll('*')).some(el =>
-                    (el.className && typeof el.className === 'string' && el.className.includes('submit-btn')) ||
-                    el.textContent.includes('提交答案')
-                );
-                // 仅在大屏中央展示区内探查，严禁读取左侧历史边栏
-                const centerCanvas = document.querySelector('.ppt__wrapper, .lesson__page, .presentation, .center-area');
-                const centerText = centerCanvas ? centerCanvas.innerText : '';
-                
-                const hasZuoda = centerCanvas && Array.from(centerCanvas.querySelectorAll('*')).some(el => 
-                    el.children.length === 0 && el.textContent.trim() === '作答' && el.offsetWidth > 0
-                );
-
-                if ((hasTiming || hasSubmit || hasZuoda) && !isCompleted) {
-                    info.hasQuiz = true;
-                    info.probId = currSlide ? (currSlide.problemID || currSlide.sid || currSlide.slideID) : null;
-                    info.domText = (currSlide ? (currSlide.body || currSlide.title || '') : '') || centerText.slice(0, 300);
-                    
-                    // 探查中央大屏中是否存在 A/B/C/D 选项按钮
-                    const centerOpts = [];
-                    if (centerCanvas) {
-                        const pList = Array.from(centerCanvas.querySelectorAll('p, span, div, li'));
-                        for (const p of pList) {
-                            const t = p.textContent.trim();
-                            if (['A', 'B', 'C', 'D', 'E', 'F'].includes(t) && p.children.length === 0 && p.offsetWidth > 0) {
-                                centerOpts.push(t);
-                            }
-                        }
-                    }
-                    const uniqueOpts = Array.from(new Set(centerOpts));
-                    const hasChoiceOptions = uniqueOpts.length >= 2;
-
-                    // 核心分流逻辑：选项按钮具有最高优先级
-                    let qType = '单选题';
-                    const probType = currSlide ? currSlide.problemType : null;
-
-                    if (hasChoiceOptions) {
-                        // 存在明显选项，绝对是选择题！
-                        if (probType === 2 || centerText.includes('多选')) {
-                            qType = '多选题';
-                        } else {
-                            qType = '单选题';
-                        }
-                    } else {
-                        // 没有选项按钮时，按题型与作答按钮判定
-                        if (probType === 5 || centerText.includes('主观') || centerText.includes('简答') || (hasZuoda && !centerText.includes('填空'))) {
-                            qType = '主观题';
-                        } else if (probType === 3 || probType === 4 || centerText.includes('填空') || (hasZuoda && centerText.includes('填空'))) {
-                            qType = '填空题';
-                        } else if (probType === 2 || centerText.includes('多选')) {
-                            qType = '多选题';
-                        } else if (probType === 1 || centerText.includes('单选')) {
-                            qType = '单选题';
-                        } else {
-                            qType = hasZuoda ? '主观题' : '单选题';
-                        }
-                    }
-                    info.qType = qType;
-
-                    // 选项配置
-                    if (qType.includes('选')) {
-                        info.options = uniqueOpts.length > 0 ? uniqueOpts : ['A', 'B', 'C', 'D'];
-                    } else {
-                        info.options = null;
-                    }
-                }
-                return info;
-            """)
-
-            if quiz_info and quiz_info.get("hasQuiz"):
-                prob_id = quiz_info.get("probId")
-                if not prob_id:
-                    dom_fingerprint = (quiz_info.get("domText") or "").strip()[:50]
-                    prob_id = f"gen_{abs(hash(dom_fingerprint + quiz_info.get('qType', '')))}"
-
-                if prob_id in answered_problem_ids:
-                    time.sleep(1)
-                    continue
-
-                print(f"\n🚨 [{time.strftime('%H:%M:%S')}] 侦测到随堂题目发布！")
-                q_type = quiz_info.get("qType", "单选题")
-                options = quiz_info.get("options", ["A", "B", "C", "D"])
-                dom_text = quiz_info.get("domText", "").strip()
-
-                # 优先检查 DOM 文本是否完整，若不够完整则调用 PaddleOCR 识别大屏截图
-                driver.save_screenshot(SCREENSHOT_FILE)
-                question_content = dom_text
-                if len(question_content) < 10 or "PPT" in question_content:
-                    print("📷 正在调用本地 PaddleOCR 解析大屏课件文字...")
-                    ocr_text = extract_text_from_image(SCREENSHOT_FILE)
-                    if ocr_text:
-                        question_content = ocr_text
-                        print(f"📖 OCR 提取题干成功: 【{question_content[:80]}...】")
-
-                # 若未开启多模态，提示非文字题的局限
-                if not ENABLE_MULTIMODAL:
-                    print("💡 [题型提示] 当前为纯文字/OCR模式。若遇电路图/几何/图表等【非文字题】，纯 OCR 无法理解图像关系；建议在 config.json 开启多模态视觉模型 (如 qwen-vl / glm-4v) 以支持看图解题。")
-
-                # 调用大模型获取答案 (传入屏幕截图支持多模态直接看图答题)
-                ans = call_deepseek_solver(question_content, q_type, options, image_path=SCREENSHOT_FILE)
-
-                # 执行自动化提交
-                print(f"⚡ 正在向雨课堂提交最终答案: 【{ans}】...")
-                
-                # 1. 选择题勾选
-                if "选" in q_type:
-                    letters = [c for c in ans.upper() if 'A' <= c <= 'Z']
-                    driver.execute_script("""
-                        const letters = arguments[0];
-                        const allEls = Array.from(document.querySelectorAll('p, span, div, li'));
-                        for (const ch of letters) {
-                            let optEl = allEls.find(el => el.children.length === 0 && el.textContent.trim() === ch && el.offsetWidth > 0);
-                            if (optEl) {
-                                optEl.click();
-                                if (optEl.parentElement) optEl.parentElement.click();
-                            }
-                        }
-                    """, letters)
-                    time.sleep(1)
-
-                # 2. 填空题/主观题展开抽屉并输入
-                if "填空" in q_type or "主观" in q_type:
-                    # 点击【作答】展开右侧抽屉
-                    driver.execute_script("""
-                        const all = Array.from(document.querySelectorAll('*'));
-                        const zuoda = all.find(el => el.children.length === 0 && el.textContent.trim() === '作答' && el.offsetWidth > 0);
-                        if (zuoda) {
-                            zuoda.click();
-                            if (zuoda.parentElement) zuoda.parentElement.click();
-                        }
+                # 1. 如果不在大屏课堂中，探测并直连正在上课的课堂
+                if "/lesson/" not in cur_url:
+                    on_lesson = driver.execute_script("""
+                        return (async function() {
+                            try {
+                                const res = await fetch('/api/v3/classroom/on-lesson', { credentials: 'include' });
+                                if (res.ok) {
+                                    const j = await res.json();
+                                    const list = j.data?.onLessonClassrooms || [];
+                                    if (list.length > 0) return list[0];
+                                }
+                            } catch(e) {}
+                            return null;
+                        })();
                     """)
-                    time.sleep(1.5)
-
-                    # 探测抽屉中实际可见的填空输入框数量
-                    detected_blank_count = driver.execute_script("""
-                        const drawer = document.querySelector('[class*="drawer"], [class*="sheet"], [class*="sidebar"]');
-                        const root = drawer || document;
-                        return Array.from(root.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]'))
-                            .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0).length;
-                    """) or 0
-
-                    if "主观" in q_type:
-                        ans_list = [ans]
-                        print(f"📝 主观题整段填入答案: 【{ans[:60]}...】")
+                    if on_lesson:
+                        l_id = on_lesson.get("lessonId") or on_lesson.get("lesson_id")
+                        c_name = on_lesson.get("courseName") or "雨课堂"
+                        print(f"🎯 检测到进行中课堂: 【{c_name}】(ID: {l_id})，正在直连大屏...")
+                        driver.get(f"{YKT_BASE_URL}/lesson/fullscreen/v3/{l_id}")
+                        time.sleep(4)
+                        continue
                     else:
-                        # 解析多项填空（支持 2 | 3 | 5 | 10 分别注入空1、空2、空3、空4）
-                        ans_list = split_blank_answers(ans, expected_count=detected_blank_count)
-                        print(f"📝 页面检测到 {detected_blank_count} 个填空槽位，精准解析各空答案: {ans_list}")
+                        time.sleep(3)
+                        continue
 
-                    # 依次填入各个输入框并彻底触发 Vue 数据绑定
-                    driver.execute_script("""
-                        const answers = arguments[0];
-                        const drawer = document.querySelector('[class*="drawer"], [class*="sheet"], [class*="sidebar"]');
-                        const root = drawer || document;
-                        let taList = Array.from(root.querySelectorAll('textarea.blank__input, input.blank__input, textarea, input[type="text"], [contenteditable="true"]'))
-                            .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+                # 2. 已在大屏课堂中，以 1 秒频率监听发题状态
+                quiz_info = driver.execute_script("""
+                    const info = { hasQuiz: false };
+                    const app = document.querySelector('#app');
+                    const store = app && app.__vue__ && app.__vue__.$store ? app.__vue__.$store.state : null;
+                    const currSlide = store ? store.currSlide : null;
 
-                        if (taList.length === 0) {
-                            taList = Array.from(document.querySelectorAll('textarea, input[type="text"]'));
-                        }
+                    // 优先检查左侧栏是否有未完成题目
+                    const unfin = Array.from(document.querySelectorAll('.timeline__item.J_slide, .timeline__item'))
+                        .find(el => el.innerText.includes('未完成'));
+                    if (unfin && !unfin.className.includes('active')) {
+                        unfin.click();
+                    }
 
-                        for (let i = 0; i < taList.length; i++) {
-                            const ta = taList[i];
-                            const val = i < answers.length ? answers[i] : (answers.length === 1 ? answers[0] : '');
-                            ta.focus();
-                            if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-                                ta.value = val;
-                                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                                ta.dispatchEvent(new Event('change', { bubbles: true }));
-                                ta.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ' }));
-                            } else {
-                                ta.innerText = val;
-                                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                                ta.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-                        }
-                    """, ans_list)
-                    time.sleep(1)
+                    // 探测作答元素
+                    const bodyText = document.body.innerText || '';
+                    const isCompleted = bodyText.includes('已完成') && !bodyText.includes('未完成');
+                    const hasTiming = Array.from(document.querySelectorAll('*')).some(el => 
+                        (el.className && typeof el.className === 'string' && el.className.includes('timing')) ||
+                        el.textContent.includes('倒计时')
+                    );
+                    const hasSubmit = Array.from(document.querySelectorAll('*')).some(el =>
+                        (el.className && typeof el.className === 'string' && el.className.includes('submit-btn')) ||
+                        el.textContent.includes('提交答案')
+                    );
+                    // 仅在大屏中央展示区内探查，严禁读取左侧历史边栏
+                    const centerCanvas = document.querySelector('.ppt__wrapper, .lesson__page, .presentation, .center-area');
+                    const centerText = centerCanvas ? centerCanvas.innerText : '';
+                
+                    const hasZuoda = centerCanvas && Array.from(centerCanvas.querySelectorAll('*')).some(el => 
+                        el.children.length === 0 && el.textContent.trim() === '作答' && el.offsetWidth > 0
+                    );
 
-                # 3. 点击提交按钮（区分抽屉提交与大屏选择题提交）
-                if AUTO_SUBMIT:
-                    if "填空" in q_type or "主观" in q_type:
-                        # 填空/主观题专属：精确点击右侧抽屉底部的【提交答案】按钮
-                        sub_res = driver.execute_script("""
-                            // 优先在抽屉容器 / .btn-box 内寻找
-                            const btnBoxes = Array.from(document.querySelectorAll('.btn-box, [class*="drawer"], .submission-btn'));
-                            for (const box of btnBoxes) {
-                                const btn = Array.from(box.querySelectorAll('button, span, div, a')).find(el => 
-                                    ['提交答案', '提交'].includes(el.textContent.trim()) && el.offsetWidth > 0
-                                );
-                                if (btn) {
-                                    btn.click();
-                                    if (btn.parentElement) btn.parentElement.click();
-                                    return { success: true, target: 'drawer_box_btn' };
+                    if ((hasTiming || hasSubmit || hasZuoda) && !isCompleted) {
+                        info.hasQuiz = true;
+                        info.probId = currSlide ? (currSlide.problemID || currSlide.sid || currSlide.slideID) : null;
+                        info.domText = (currSlide ? (currSlide.body || currSlide.title || '') : '') || centerText.slice(0, 300);
+                    
+                        // 探查中央大屏中是否存在 A/B/C/D 选项按钮
+                        const centerOpts = [];
+                        if (centerCanvas) {
+                            const pList = Array.from(centerCanvas.querySelectorAll('p, span, div, li'));
+                            for (const p of pList) {
+                                const t = p.textContent.trim();
+                                if (['A', 'B', 'C', 'D', 'E', 'F'].includes(t) && p.children.length === 0 && p.offsetWidth > 0) {
+                                    centerOpts.push(t);
                                 }
                             }
-                            // 倒序查找（抽屉在 DOM 最底端）
-                            const all = Array.from(document.querySelectorAll('*')).reverse();
-                            const sub = all.find(el => 
-                                el.children.length === 0 && 
-                                ['提交答案', '提交'].includes(el.textContent.trim()) && 
-                                el.offsetWidth > 0
-                            );
-                            if (sub) {
-                                sub.click();
-                                if (sub.parentElement) sub.parentElement.click();
-                                return { success: true, target: 'reverse_sub_btn' };
+                        }
+                        const uniqueOpts = Array.from(new Set(centerOpts));
+                        const hasChoiceOptions = uniqueOpts.length >= 2;
+
+                        // 核心分流逻辑：选项按钮具有最高优先级
+                        let qType = '单选题';
+                        const probType = currSlide ? currSlide.problemType : null;
+
+                        if (hasChoiceOptions) {
+                            // 存在明显选项，绝对是选择题！
+                            if (probType === 2 || centerText.includes('多选')) {
+                                qType = '多选题';
+                            } else {
+                                qType = '单选题';
                             }
-                            return { success: false };
+                        } else {
+                            // 没有选项按钮时，按题型与作答按钮判定
+                            if (probType === 5 || centerText.includes('主观') || centerText.includes('简答') || (hasZuoda && !centerText.includes('填空'))) {
+                                qType = '主观题';
+                            } else if (probType === 3 || probType === 4 || centerText.includes('填空') || (hasZuoda && centerText.includes('填空'))) {
+                                qType = '填空题';
+                            } else if (probType === 2 || centerText.includes('多选')) {
+                                qType = '多选题';
+                            } else if (probType === 1 || centerText.includes('单选')) {
+                                qType = '单选题';
+                            } else {
+                                qType = hasZuoda ? '主观题' : '单选题';
+                            }
+                        }
+                        info.qType = qType;
+
+                        // 选项配置
+                        if (qType.includes('选')) {
+                            info.options = uniqueOpts.length > 0 ? uniqueOpts : ['A', 'B', 'C', 'D'];
+                        } else {
+                            info.options = null;
+                        }
+                    }
+                    return info;
+                """)
+
+                if quiz_info and quiz_info.get("hasQuiz"):
+                    prob_id = quiz_info.get("probId")
+                    if not prob_id:
+                        dom_fingerprint = (quiz_info.get("domText") or "").strip()[:50]
+                        prob_id = f"gen_{abs(hash(dom_fingerprint + quiz_info.get('qType', '')))}"
+
+                    if prob_id in answered_problem_ids:
+                        time.sleep(1)
+                        continue
+
+                    print(f"\n🚨 [{time.strftime('%H:%M:%S')}] 侦测到随堂题目发布！")
+                    q_type = quiz_info.get("qType", "单选题")
+                    options = quiz_info.get("options", ["A", "B", "C", "D"])
+                    dom_text = quiz_info.get("domText", "").strip()
+
+                    # 优先检查 DOM 文本是否完整，若不够完整则调用 PaddleOCR 识别大屏截图
+                    driver.save_screenshot(SCREENSHOT_FILE)
+                    question_content = dom_text
+                    if len(question_content) < 10 or "PPT" in question_content:
+                        print("📷 正在调用本地 PaddleOCR 解析大屏课件文字...")
+                        ocr_text = extract_text_from_image(SCREENSHOT_FILE)
+                        if ocr_text:
+                            question_content = ocr_text
+                            print(f"📖 OCR 提取题干成功: 【{question_content[:80]}...】")
+
+                    # 若未开启多模态，提示非文字题的局限
+                    if not ENABLE_MULTIMODAL:
+                        print("💡 [题型提示] 当前为纯文字/OCR模式。若遇电路图/几何/图表等【非文字题】，纯 OCR 无法理解图像关系；建议在 config.json 开启多模态视觉模型 (如 qwen-vl / glm-4v) 以支持看图解题。")
+
+                    # 调用大模型获取答案 (传入屏幕截图支持多模态直接看图答题)
+                    ans = call_deepseek_solver(question_content, q_type, options, image_path=SCREENSHOT_FILE)
+
+                    # 执行自动化提交
+                    print(f"⚡ 正在向雨课堂提交最终答案: 【{ans}】...")
+                
+                    # 1. 选择题勾选
+                    if "选" in q_type:
+                        letters = [c for c in ans.upper() if 'A' <= c <= 'Z']
+                        driver.execute_script("""
+                            const letters = arguments[0];
+                            const allEls = Array.from(document.querySelectorAll('p, span, div, li'));
+                            for (const ch of letters) {
+                                let optEl = allEls.find(el => el.children.length === 0 && el.textContent.trim() === ch && el.offsetWidth > 0);
+                                if (optEl) {
+                                    optEl.click();
+                                    if (optEl.parentElement) optEl.parentElement.click();
+                                }
+                            }
+                        """, letters)
+                        time.sleep(1)
+
+                    # 2. 填空题/主观题展开抽屉并输入
+                    if "填空" in q_type or "主观" in q_type:
+                        # 点击【作答】展开右侧抽屉
+                        driver.execute_script("""
+                            const all = Array.from(document.querySelectorAll('*'));
+                            const zuoda = all.find(el => el.children.length === 0 && el.textContent.trim() === '作答' && el.offsetWidth > 0);
+                            if (zuoda) {
+                                zuoda.click();
+                                if (zuoda.parentElement) zuoda.parentElement.click();
+                            }
                         """)
-                    else:
-                        # 选择题专属：点击大屏画布上的提交按钮
-                        sub_res = driver.execute_script("""
-                            const allEls = Array.from(document.querySelectorAll('button, .submit-btn, div, span, a'));
-                            const sub = allEls.find(b => {
-                                const t = b.textContent.trim();
-                                const cls = b.className || '';
-                                return b.offsetWidth > 0 && (
-                                    t === '提交答案' || 
-                                    t === '提交' || 
-                                    (typeof cls === 'string' && cls.includes('submit-btn'))
+                        time.sleep(1.5)
+
+                        # 探测抽屉中实际可见的填空输入框数量
+                        detected_blank_count = driver.execute_script("""
+                            const drawer = document.querySelector('[class*="drawer"], [class*="sheet"], [class*="sidebar"]');
+                            const root = drawer || document;
+                            return Array.from(root.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]'))
+                                .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0).length;
+                        """) or 0
+
+                        if "主观" in q_type:
+                            ans_list = [ans]
+                            print(f"📝 主观题整段填入答案: 【{ans[:60]}...】")
+                        else:
+                            # 解析多项填空（支持 2 | 3 | 5 | 10 分别注入空1、空2、空3、空4）
+                            ans_list = split_blank_answers(ans, expected_count=detected_blank_count)
+                            print(f"📝 页面检测到 {detected_blank_count} 个填空槽位，精准解析各空答案: {ans_list}")
+
+                        # 依次填入各个输入框并彻底触发 Vue 数据绑定
+                        driver.execute_script("""
+                            const answers = arguments[0];
+                            const drawer = document.querySelector('[class*="drawer"], [class*="sheet"], [class*="sidebar"]');
+                            const root = drawer || document;
+                            let taList = Array.from(root.querySelectorAll('textarea.blank__input, input.blank__input, textarea, input[type="text"], [contenteditable="true"]'))
+                                .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+
+                            if (taList.length === 0) {
+                                taList = Array.from(document.querySelectorAll('textarea, input[type="text"]'));
+                            }
+
+                            for (let i = 0; i < taList.length; i++) {
+                                const ta = taList[i];
+                                const val = i < answers.length ? answers[i] : (answers.length === 1 ? answers[0] : '');
+                                ta.focus();
+                                if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
+                                    ta.value = val;
+                                    ta.dispatchEvent(new Event('input', { bubbles: true }));
+                                    ta.dispatchEvent(new Event('change', { bubbles: true }));
+                                    ta.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ' }));
+                                } else {
+                                    ta.innerText = val;
+                                    ta.dispatchEvent(new Event('input', { bubbles: true }));
+                                    ta.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                            }
+                        """, ans_list)
+                        time.sleep(1)
+
+                    # 3. 点击提交按钮（区分抽屉提交与大屏选择题提交）
+                    if AUTO_SUBMIT:
+                        if "填空" in q_type or "主观" in q_type:
+                            # 填空/主观题专属：精确点击右侧抽屉底部的【提交答案】按钮
+                            sub_res = driver.execute_script("""
+                                // 优先在抽屉容器 / .btn-box 内寻找
+                                const btnBoxes = Array.from(document.querySelectorAll('.btn-box, [class*="drawer"], .submission-btn'));
+                                for (const box of btnBoxes) {
+                                    const btn = Array.from(box.querySelectorAll('button, span, div, a')).find(el => 
+                                        ['提交答案', '提交'].includes(el.textContent.trim()) && el.offsetWidth > 0
+                                    );
+                                    if (btn) {
+                                        btn.click();
+                                        if (btn.parentElement) btn.parentElement.click();
+                                        return { success: true, target: 'drawer_box_btn' };
+                                    }
+                                }
+                                // 倒序查找（抽屉在 DOM 最底端）
+                                const all = Array.from(document.querySelectorAll('*')).reverse();
+                                const sub = all.find(el => 
+                                    el.children.length === 0 && 
+                                    ['提交答案', '提交'].includes(el.textContent.trim()) && 
+                                    el.offsetWidth > 0
                                 );
-                            });
-                            if (sub) {
-                                sub.click();
-                                if (sub.parentElement) sub.parentElement.click();
-                                return { success: true, target: 'canvas_submit_btn' };
-                            }
-                            return { success: false };
-                        """)
-                    print(f"提交按钮点击响应: {sub_res}")
-                    print("✅ 提交指令已下发！状态已同步至教师端！")
-                else:
-                    print("💡 auto_submit 设为 false，答案已就绪，请手动确认点击提交。")
+                                if (sub) {
+                                    sub.click();
+                                    if (sub.parentElement) sub.parentElement.click();
+                                    return { success: true, target: 'reverse_sub_btn' };
+                                }
+                                return { success: false };
+                            """)
+                        else:
+                            # 选择题专属：点击大屏画布上的提交按钮
+                            sub_res = driver.execute_script("""
+                                const allEls = Array.from(document.querySelectorAll('button, .submit-btn, div, span, a'));
+                                const sub = allEls.find(b => {
+                                    const t = b.textContent.trim();
+                                    const cls = b.className || '';
+                                    return b.offsetWidth > 0 && (
+                                        t === '提交答案' || 
+                                        t === '提交' || 
+                                        (typeof cls === 'string' && cls.includes('submit-btn'))
+                                    );
+                                });
+                                if (sub) {
+                                    sub.click();
+                                    if (sub.parentElement) sub.parentElement.click();
+                                    return { success: true, target: 'canvas_submit_btn' };
+                                }
+                                return { success: false };
+                            """)
+                        print(f"提交按钮点击响应: {sub_res}")
+                        print("✅ 提交指令已下发！状态已同步至教师端！")
+                    else:
+                        print("💡 auto_submit 设为 false，答案已就绪，请手动确认点击提交。")
 
-                if prob_id:
-                    answered_problem_ids.add(prob_id)
-                print("=" * 65)
+                    if prob_id:
+                        answered_problem_ids.add(prob_id)
+                    print("=" * 65)
 
-            time.sleep(1)
+                time.sleep(1)
+
+            except (NoSuchWindowException, WebDriverException) as e:
+                print(f"\n⚠️ 检测到 Edge 浏览器连接异常或窗口关闭 ({type(e).__name__})！")
+                print("💡 温馨提示：请勿手动点击右上角 X 关闭 Edge 浏览器（可最小化）。")
+                print("🔄 若因电脑休眠唤醒或切换网络断线，系统正在自动重新拉起浏览器恢复监听...")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(3)
+                try:
+                    driver = get_driver(headless=HEADLESS)
+                    driver.get(f"{YKT_BASE_URL}/v2/web/index")
+                    time.sleep(2)
+                    print("✅ Edge 浏览器已成功重新唤起并连上雨课堂，恢复实时监听！\n")
+                except Exception as relaunch_err:
+                    print(f"❌ 自动唤起浏览器失败: {relaunch_err}，5 秒后将自动重试...")
+                    time.sleep(5)
+            except Exception as e:
+                print(f"⚠️ 监听循环偶发异常: {e}")
+                time.sleep(2)
 
     finally:
+        restore_system_sleep()
         driver.quit()
 
 if __name__ == "__main__":
