@@ -35,3 +35,9 @@ desktop.ini
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# PyInstaller 打包与发布产物
+build/
+dist/
+*.spec
+*.zip

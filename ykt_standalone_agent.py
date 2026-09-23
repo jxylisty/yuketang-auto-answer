@@ -318,8 +318,24 @@ def get_driver(headless=False):
         print("3. 检查网络通畅以便自动加载浏览器驱动。\n")
         raise
 
-def run_standalone_agent():
-    """纯独立运行的主控制循环"""
+def run_standalone_agent(stop_event=None, command_queue=None, status_callback=None):
+    """纯独立运行的主控制循环（支持 CLI 独立运行或作为 GUI 后台 Worker 调度）"""
+    global CONFIG, API_BASE, API_KEY, MODELS_POOL, ENABLE_MULTIMODAL, MULTIMODAL_MODELS, DEFAULT_MODEL, AUTO_SUBMIT, LISTEN_INTERVAL, HEADLESS, YKT_BASE_URL
+    CONFIG = load_config()
+    API_BASE = CONFIG.get("api_base", "https://tokenrhythm.studio/v1")
+    API_KEY = CONFIG.get("api_key", "")
+    MODELS_POOL = list(CONFIG.get("models", ["deepseek-v4-flash-0731", "glm-5.3-flash", "qwen3.7-flash"]))
+    ENABLE_MULTIMODAL = CONFIG.get("enable_multimodal", False)
+    MULTIMODAL_MODELS = CONFIG.get("multimodal_models", ["qwen-vl-plus", "glm-4v-flash"])
+    if ENABLE_MULTIMODAL and MULTIMODAL_MODELS:
+        for vm in reversed(MULTIMODAL_MODELS):
+            if vm not in MODELS_POOL:
+                MODELS_POOL.insert(0, vm)
+    DEFAULT_MODEL = MODELS_POOL[0] if MODELS_POOL else "deepseek-v4-flash-0731"
+    AUTO_SUBMIT = CONFIG.get("auto_submit", True)
+    LISTEN_INTERVAL = CONFIG.get("listen_interval", 1.0)
+    HEADLESS = CONFIG.get("headless", False)
+    YKT_BASE_URL = CONFIG.get("yuketang_base_url", "https://www.yuketang.cn").rstrip("/")
     print("=" * 60)
     print("🚀 雨课堂随堂测验自动作答引擎已启动")
     print(f"🌐 目标平台: {YKT_BASE_URL}")
@@ -345,10 +361,35 @@ def run_standalone_agent():
         print("\n👀 正在监听课堂动态... (检测开课中)")
         print("💡 [挂机须知] 浏览器窗口【可最小化】，但【切勿手动点击右上角 X 关闭】。")
         print("💡 [考勤须知] 请在【到达教室、连上网络且电脑开机】后挂机，合上笔记本盖子休眠会导致断网中断。\n")
+        print("💡 [VIP/扫码须知] 若老师升级了 VIP 动态二维码/现场扫码，可在 Edge 中直接扫码进班，系统将自动帮您刷新同步并开启答题！\n")
         answered_problem_ids = set()
+        refreshed_lesson_ids = set()
+
+        if status_callback:
+            status_callback({"state": "waiting", "text": "正在监听开课状态..."})
 
         while True:
+            if stop_event and stop_event.is_set():
+                print("🛑 收到停止指令，正在退出课堂值守...")
+                break
+
             try:
+                # 响应外部即时指令（强制刷新当前大屏、直连指定课堂）
+                if command_queue and not command_queue.empty():
+                    try:
+                        cmd, arg = command_queue.get_nowait()
+                        if cmd == "refresh":
+                            print("🔄 [控制指令] 正在强制刷新当前大屏页面...")
+                            driver.refresh()
+                            time.sleep(2)
+                        elif cmd == "navigate":
+                            target_url = str(arg) if str(arg).startswith("http") else f"{YKT_BASE_URL}/lesson/fullscreen/v3/{arg}"
+                            print(f"🎯 [控制指令] 正在直连目标课堂: {target_url}")
+                            driver.get(target_url)
+                            time.sleep(3)
+                    except Exception as q_err:
+                        print(f"⚠️ 处理外部指令轻微异常: {q_err}")
+
                 cur_url = driver.current_url
 
                 # 1. 如果不在大屏课堂中，探测并直连正在上课的课堂
@@ -370,14 +411,40 @@ def run_standalone_agent():
                         l_id = on_lesson.get("lessonId") or on_lesson.get("lesson_id")
                         c_name = on_lesson.get("courseName") or "雨课堂"
                         print(f"🎯 检测到进行中课堂: 【{c_name}】(ID: {l_id})，正在直连大屏...")
+                        if status_callback:
+                            status_callback({"state": "connecting", "lesson_id": l_id, "course_name": c_name, "text": f"直连课堂: {c_name}"})
                         driver.get(f"{YKT_BASE_URL}/lesson/fullscreen/v3/{l_id}")
                         time.sleep(4)
                         continue
                     else:
-                        time.sleep(3)
+                        time.sleep(2)
                         continue
 
-                # 2. 已在大屏课堂中，以 1 秒频率监听发题状态
+                # 2. 已在大屏课堂中（无论是自动直连、手动打开还是扫码进入）
+                # 提取当前 Lesson ID，并执行一次自动刷新以解决 VIP / 现场扫码课堂课件未挂载的问题
+                m = re.search(r'/lesson/(?:fullscreen/v3/|v3/|fullscreen/)?(\d+)', cur_url)
+                current_lid = m.group(1) if m else "active_lesson"
+                if current_lid not in refreshed_lesson_ids:
+                    print(f"\n🎉 侦测到已成功进入大屏课堂 (ID: {current_lid})！")
+                    print("🔄 正在自动执行页面刷新，彻底同步课件大屏与 WebSocket 实时通讯通道...")
+                    if status_callback:
+                        status_callback({"state": "syncing", "lesson_id": current_lid, "text": "正在同步大屏课件..."})
+                    time.sleep(1.5)
+                    try:
+                        driver.refresh()
+                        time.sleep(3)
+                    except Exception as ref_e:
+                        print(f"⚠️ 自动刷新页面轻微异常: {ref_e}")
+                    refreshed_lesson_ids.add(current_lid)
+                    print("✅ 课堂大屏与通信通道同步完毕，随堂测验实时监听中！\n")
+                    if status_callback:
+                        status_callback({"state": "listening", "lesson_id": current_lid, "text": f"已就绪 (课堂: {current_lid})"})
+                    continue
+
+                if status_callback:
+                    status_callback({"state": "listening", "lesson_id": current_lid, "text": f"正在监听测验 (ID: {current_lid})"})
+
+                # 3. 接下来以 1 秒频率监听发题状态
                 quiz_info = driver.execute_script("""
                     const info = { hasQuiz: false };
                     const app = document.querySelector('#app');
@@ -478,6 +545,8 @@ def run_standalone_agent():
 
                     print(f"\n🚨 [{time.strftime('%H:%M:%S')}] 侦测到随堂题目发布！")
                     q_type = quiz_info.get("qType", "单选题")
+                    if status_callback:
+                        status_callback({"state": "solving", "lesson_id": current_lid, "q_type": q_type, "text": f"侦测到题目: {q_type}，AI思考中..."})
                     options = quiz_info.get("options", ["A", "B", "C", "D"])
                     dom_text = quiz_info.get("domText", "").strip()
 
@@ -629,6 +698,8 @@ def run_standalone_agent():
                             """)
                         print(f"提交按钮点击响应: {sub_res}")
                         print("✅ 提交指令已下发！状态已同步至教师端！")
+                        if status_callback:
+                            status_callback({"state": "submitted", "lesson_id": current_lid, "ans": ans, "text": f"已提交: {ans}"})
                     else:
                         print("💡 auto_submit 设为 false，答案已就绪，请手动确认点击提交。")
 
@@ -661,7 +732,12 @@ def run_standalone_agent():
 
     finally:
         restore_system_sleep()
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        if status_callback:
+            status_callback({"state": "stopped", "text": "已停止值守"})
 
 if __name__ == "__main__":
     run_standalone_agent()

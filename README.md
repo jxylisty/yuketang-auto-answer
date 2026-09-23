@@ -135,10 +135,31 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
   "listen_interval": 1.0
 }
 ```
-3. 上课前，直接双击运行 **`一键启动(全自动答题).bat`**（或 `start.bat`）！  
-   终端将静默监听当前进行中的课堂，一旦老师发题，几秒内即刻完成全自动作答！
+
+### 4. 启动与值守（两种方式任选）
+
+- **方式 A（推荐新手与日常使用）：启动桌面图形客户端 (GUI)**  
+  双击运行 **`启动图形界面(GUI).bat`**（或执行 `python ykt_gui.py`）：
+  - 🖥️ **可视化操作**：无需手动修改 JSON 文件，界面支持直接修改 Key、模型与选项；
+  - 🟢 **状态实时看板**：动态显示正在监听、正在作答、已提交等状态指示灯；
+  - 📜 **极客风彩色日志**：实时呈现看题、做题耗时与答案提交详情；
+  - 🛠️ **快捷工具箱**：内置【一键扫码登录】、【一键刷新大屏】与【直连指定课堂】。
+
+- **方式 B：极简后台命令行值守**  
+  直接双击运行 **`一键启动(全自动答题).bat`**（或 `start.bat`），终端将以极简模式在后台自动监听答题！
 
 ---
+
+## ⚡ VIP / 现场动态二维码课堂专有增强机制
+
+> [!TIP]
+> **老师升级 VIP / 开启现场扫码进班怎么办？**
+> - **痛点**：VIP 课堂启用滚动二维码后，API 无法提前探测开课，必须扫码进入；且扫码跳转进班后，网页常因 WebSocket 未激活而无法接收发题。
+> - **全新自愈解法**：
+>   1. 您只需在 Edge 浏览器中像平时一样扫码进入课堂（或在手机微信扫码后在电脑打开大屏）；
+>   2. 自动化引擎一旦感知到 URL 跃迁进入 `/lesson/...` 课堂大屏，**将自动帮您执行一次网页强力刷新 (`driver.refresh()`)**，无需手动按 F5！
+>   3. 刷新后课件与实时通信通道自动挂载完毕，秒级恢复题目监听！
+>   4. 若遇到任何网络卡顿，在图形界面点击**【🔄 刷新大屏】**按钮也可随时一键重新校准。
 
 ## ⚙️ 配置文件参数说明 (`config.json`)
 
@@ -176,11 +197,15 @@ yuketang-auto-answer/
 ├── config.example.json           # 配置模板参考
 ├── config.json                   # 用户本地配置 (已忽略上传，安全私密)
 │
+├── ykt_gui.py                    # 现代化桌面图形客户端 (PyQt5)
 ├── ykt_standalone_agent.py       # 核心自动化引擎主程序
 ├── login_helper.py               # 首次扫码登录辅助脚本
+├── build_release.py              # GitHub Release 独立免安装打包脚本
 │
-├── 一键启动(全自动答题).bat        # Windows 快捷启动入口
+├── 启动图形界面(GUI).bat          # Windows 桌面客户端启动入口
+├── 一键启动(全自动答题).bat        # Windows 命令行快捷启动入口
 ├── 首次使用(扫码登录).bat          # Windows 首次登录入口
+├── build_release.bat             # 一键打包编译发布包批处理
 ├── start.bat / login.bat         # 纯英命名的快捷批处理别名
 │
 ├── tampermonkey/                 # 网页版油猴脚本备用方案
@@ -190,6 +215,20 @@ yuketang-auto-answer/
     ├── debug_tools/              # 历史逆向测试脚本
     └── debug_screenshots/        # 历史排查截图
 ```
+
+---
+
+## 📦 如何打包并发布到 GitHub Releases (面向小白分发)
+
+如果你想把本项目分享给同班同学或发布到 GitHub Release，且他们**完全不想安装 Python 环境**：
+
+1. 双击运行根目录下的 **`build_release.bat`**（或在终端运行 `python build_release.py`）；
+2. 脚本将自动调用 PyInstaller 进行免安装编译，并自动打包生成：
+   - 📁 `dist/雨课堂随堂助手/` (独立便携文件夹，内含 `雨课堂随堂助手.exe`)
+   - 🗜️ `dist/yuketang-auto-answer-v2.0-windows-x64.zip` (绿色免安装压缩包)
+3. 打开你的 GitHub 仓库 -> 点击右侧 **Releases** -> **Draft a new release**；
+4. 将 `yuketang-auto-answer-v2.0-windows-x64.zip` 拖拽上传作为附件发布！
+5. 其他同学下载后，**解压直接双击 `雨课堂随堂助手.exe` 即可使用**！
 
 ---
 
